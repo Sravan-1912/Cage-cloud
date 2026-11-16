@@ -22,7 +22,7 @@ services:
   - type: pserv
     name: cage-api
     runtime: docker
-    repo: https://github.com/Sravan-1912/Antiquarian-s-cage   # change to the repo that has THIS (current) code
+    repo: https://github.com/Sravan-1912/Cage-cloud   # this repo (has the current code)
     plan: free
     numInstances: 1          # the RDP relay pairs a session's two tunnel WebSockets within ONE process — don't scale out
     dockerfilePath: ./infrastructure/docker/backend.Dockerfile
@@ -64,7 +64,7 @@ services:
   - type: web
     name: cage-web
     runtime: docker
-    repo: https://github.com/Sravan-1912/Antiquarian-s-cage   # change to your fork if different
+    repo: https://github.com/Sravan-1912/Cage-cloud   # this repo (has the current code)
     plan: free
     dockerfilePath: ./infrastructure/docker/frontend.render.Dockerfile
     dockerContext: .
