@@ -1,0 +1,73 @@
+# Antiquarian's Cage — Render Blueprint (hosted demo / friend-testing deployment).
+# Topology: managed Postgres + Key Value (Redis), a PRIVATE API service, and a public WEB service (nginx) that serves
+# the console and proxies /api and /agent to the API on ONE HTTPS origin.
+# NOTE: this runs with ALLOW_EDGE_TLS=true (no agent mTLS — requests are still signed). See RENDER.md.
+# After the first deploy you MUST set PUBLIC_BASE_URL and ALLOWED_ORIGINS to the web service's real URL, and fill the
+# three secrets marked "sync: false" (generate with: python infrastructure/scripts/generate_secrets.py).
+
+databases:
+  - name: cage-db
+    databaseName: antiquarians_cage
+    plan: free
+
+services:
+  # Redis (Key Value) — used for rate limiting.
+  - type: redis
+    name: cage-redis
+    plan: free
+    ipAllowList: []            # internal only
+    maxmemoryPolicy: noeviction
+
+  # Private API (FastAPI/uvicorn). Not public; the web service proxies to it.
+  - type: pserv
+    name: cage-api
+    runtime: docker
+    repo: https://github.com/Sravan-1912/Antiquarian-s-cage   # change to the repo that has THIS (current) code
+    plan: free
+    numInstances: 1          # the RDP relay pairs a session's two tunnel WebSockets within ONE process — don't scale out
+    dockerfilePath: ./infrastructure/docker/backend.Dockerfile
+    dockerContext: ./backend
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*" --no-server-header
+    preDeployCommand: alembic upgrade head
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: ALLOW_EDGE_TLS          # relaxes the mTLS / single-DB-role / SMTP production guards for an edge-TLS host
+        value: "true"
+      - key: AGENT_REQUIRE_MTLS
+        value: "false"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+      - key: SCHEDULER_ENABLED
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase: { name: cage-db, property: connectionString }
+      - key: MIGRATION_DATABASE_URL
+        fromDatabase: { name: cage-db, property: connectionString }
+      - key: REDIS_URL
+        fromService: { type: redis, name: cage-redis, property: connectionString }
+      - key: PUBLIC_BASE_URL         # set after first deploy to https://<cage-web url>
+        sync: false
+      - key: ALLOWED_ORIGINS         # set to ["https://<cage-web url>"]
+        sync: false
+      - key: DATA_ENCRYPTION_KEY     # base64 of 32 random bytes — from generate_secrets.py
+        sync: false
+      - key: AUDIT_HMAC_KEY          # base64 of 32 random bytes — from generate_secrets.py (MUST differ from above)
+        sync: false
+      - key: DEVICE_CA_KEY_PASSPHRASE # >= 24 chars
+        sync: false
+
+  # Public web service: nginx serving the console + proxying /api and /agent to the private API.
+  - type: web
+    name: cage-web
+    runtime: docker
+    repo: https://github.com/Sravan-1912/Antiquarian-s-cage   # change to your fork if different
+    plan: free
+    dockerfilePath: ./infrastructure/docker/frontend.render.Dockerfile
+    dockerContext: .
+    envVars:
+      - key: API_UPSTREAM           # internal host:port of the private API, injected by Render
+        fromService: { type: pserv, name: cage-api, property: hostport }

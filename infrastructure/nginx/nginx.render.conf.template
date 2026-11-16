@@ -1,0 +1,68 @@
+# Render edge: Render terminates TLS and routes plain HTTP to ${PORT}. This serves the console and proxies BOTH the
+# API (/api) and the agent channel (/agent) to the private API service at ${API_UPSTREAM}. No mTLS (the agent channel
+# authenticates by its per-request signature); run the API with ALLOW_EDGE_TLS=true and AGENT_REQUIRE_MTLS=false.
+# This file is an nginx template: the nginx image runs envsubst and replaces ${PORT} and ${API_UPSTREAM} at start.
+limit_req_zone $binary_remote_addr zone=api:10m rate=20r/s;
+
+# WebSocket upgrade support (used by the RDP relay tunnels on /api/v1/rdp/tunnel and /agent/v1/rdp/tunnel).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen ${PORT};
+    server_name _;
+    root /usr/share/nginx/html;
+
+    server_tokens off;
+    client_max_body_size 1m;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" always;
+
+    # Console + workspace API (browser, same origin as the SPA). Also carries the operator RDP relay WebSocket.
+    location /api/ {
+        limit_req zone=api burst=40 nodelay;
+        proxy_pass http://${API_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;   # long-lived RDP relay tunnels
+        proxy_send_timeout 3600s;
+    }
+
+    # Agent channel on the same public port (no mTLS on Render — requests are individually signed by the device key).
+    # Also carries the endpoint RDP relay WebSocket (/agent/v1/rdp/tunnel).
+    location /agent/ {
+        limit_req zone=api burst=20 nodelay;
+        client_max_body_size 256k;
+        proxy_pass http://${API_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Client-Cert "";
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location / {
+        try_files $uri /index.html;
+        add_header Cache-Control "no-store";
+    }
+}
