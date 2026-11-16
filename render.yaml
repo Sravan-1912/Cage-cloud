@@ -27,9 +27,8 @@ services:
     numInstances: 1          # the RDP relay pairs a session's two tunnel WebSockets within ONE process — don't scale out
     dockerfilePath: ./infrastructure/docker/backend.Dockerfile
     dockerContext: ./backend
-    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*" --no-server-header
-    preDeployCommand: alembic upgrade head
-    healthCheckPath: /api/v1/health
+    # Free tier: no preDeployCommand and no healthCheckPath on a pserv — run migrations at startup, then uvicorn.
+    dockerCommand: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*' --no-server-header"
     envVars:
       - key: ENVIRONMENT
         value: production
