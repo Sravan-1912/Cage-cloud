@@ -13,9 +13,10 @@ admins can sign in (**email + password**) and endpoints on **any network** can e
 > demo; add a Render persistent disk at `/app/var` to keep it).
 
 ## What gets created
-`render.yaml` is a **Blueprint** that creates four things: a **Postgres** database, a **Key Value (Redis)** instance, a
-**private API** service, and a **public web** service (nginx) that serves the console and proxies `/api` and `/agent`
-to the API on one origin.
+`render.yaml` is a **Blueprint** that creates three things: a **Postgres** database, a **Key Value (Redis)** instance,
+and one **public web service** (`cage-web`) — the FastAPI backend serving the console SPA **and** `/api`, `/agent` and
+the RDP-relay WebSockets on one HTTPS origin. (Render's free plan has no private services, so there is no separate
+API/nginx split — `uvicorn` serves everything.)
 
 ## Steps
 
@@ -39,18 +40,18 @@ You need: `DATA_ENCRYPTION_KEY`, `AUDIT_HMAC_KEY` (must differ), and a `DEVICE_C
 
 ### 3. Create the Blueprint on Render
 1. Sign in at **render.com** → **New → Blueprint**.
-2. Connect the GitHub repo. Render reads `render.yaml` and shows the four services.
-3. When prompted (or afterward, per service → **Environment**), fill the `sync: false` values on **cage-api**:
+2. Connect the GitHub repo. Render reads `render.yaml` and shows the three services (Postgres, Redis, `cage-web`).
+3. When prompted (or afterward, on **cage-web → Environment**), fill the `sync: false` values:
    - `DATA_ENCRYPTION_KEY`, `AUDIT_HMAC_KEY`, `DEVICE_CA_KEY_PASSPHRASE` → from step 2.
-   - Leave `PUBLIC_BASE_URL` and `ALLOWED_ORIGINS` blank for now (step 5).
-4. Click **Apply** / **Create**. Render builds and deploys. The `cage-api` runs `alembic upgrade head` automatically
-   (preDeployCommand).
+   - For `PUBLIC_BASE_URL` / `ALLOWED_ORIGINS`, enter placeholder `https://cage-web.onrender.com` and
+     `["https://cage-web.onrender.com"]` now, and correct them in step 5 once you know the real URL.
+4. Click **Apply** / **Create**. Render builds and deploys. `cage-web` runs `alembic upgrade head` at startup.
 
 ### 4. Get your public URL
 After deploy, **cage-web** has a URL like `https://cage-web-xxxx.onrender.com`. That's your app.
 
-### 5. Set the base URL, then redeploy the API
-On **cage-api → Environment**, set:
+### 5. Set the base URL, then redeploy
+On **cage-web → Environment**, set:
 - `PUBLIC_BASE_URL` = `https://cage-web-xxxx.onrender.com`
 - `ALLOWED_ORIGINS` = `["https://cage-web-xxxx.onrender.com"]`
 
@@ -90,10 +91,9 @@ RDP is relayed through this backend, so it works between different networks with
 > process. Not verified on real two-network hardware — test on isolated VMs first.
 
 ## If something fails on first deploy
-Because Render's exact port/networking wiring can vary, check these if a service won't start:
-- **cage-web can't reach the API** → confirm `API_UPSTREAM` resolved to the private API's `host:port`
-  (cage-web → Environment). nginx `proxy_pass http://<that>` must match.
-- **API DB errors** → Render's Postgres URL is `postgresql://…`; the app auto-rewrites it to `postgresql+psycopg://`
-  (see `backend/app/core/database.py:_normalize_db_url`). If migrations fail, check `cage-api` logs.
+- **DB errors / migrations** → Render's Postgres URL is `postgresql://…`; the app auto-rewrites it to
+  `postgresql+psycopg://` (see `backend/app/core/database.py:_normalize_db_url`). Check **cage-web → Logs**.
+- **"Origin not allowed" at sign-in** → `ALLOWED_ORIGINS` doesn't exactly match the real web URL (step 5); fix + redeploy.
+- **Service won't start** → `cage-web` uses Render's `$PORT` (via the Dockerfile `CMD`); don't hardcode a port.
 - **"Origin not allowed" at sign-in** → `ALLOWED_ORIGINS` doesn't exactly match the web URL (step 5); fix and redeploy.
 - **Port binding** → the API uses Render's `$PORT` (via `dockerCommand` in `render.yaml`); don't hardcode a port.
