@@ -1,8 +1,9 @@
 # Antiquarian's Cage — Render Blueprint (hosted demo / friend-testing deployment).
-# Topology: managed Postgres + Key Value (Redis), a PRIVATE API service, and a public WEB service (nginx) that serves
-# the console and proxies /api and /agent to the API on ONE HTTPS origin.
-# NOTE: this runs with ALLOW_EDGE_TLS=true (no agent mTLS — requests are still signed). See RENDER.md.
-# After the first deploy you MUST set PUBLIC_BASE_URL and ALLOWED_ORIGINS to the web service's real URL, and fill the
+# Free-tier topology: managed Postgres + Key Value (Redis) + ONE public web service that runs the FastAPI backend,
+# which serves the console SPA AND the /api and /agent channels AND the RDP-relay WebSockets on one HTTPS origin.
+# (Render's free plan has no private services, so there is no separate API/nginx split — uvicorn serves it all.)
+# Runs with ALLOW_EDGE_TLS=true (no agent mTLS — requests are still individually signed). See RENDER.md.
+# After the first deploy you MUST set PUBLIC_BASE_URL and ALLOWED_ORIGINS to this service's real URL, and fill the
 # three secrets marked "sync: false" (generate with: python infrastructure/scripts/generate_secrets.py).
 
 databases:
@@ -18,17 +19,16 @@ services:
     ipAllowList: []            # internal only
     maxmemoryPolicy: noeviction
 
-  # Private API (FastAPI/uvicorn). Not public; the web service proxies to it.
-  - type: pserv
-    name: cage-api
+  # One public web service: the FastAPI backend serving the console + /api + /agent + RDP-relay WebSockets.
+  - type: web
+    name: cage-web
     runtime: docker
     repo: https://github.com/Sravan-1912/Cage-cloud   # this repo (has the current code)
     plan: free
     numInstances: 1          # the RDP relay pairs a session's two tunnel WebSockets within ONE process — don't scale out
-    dockerfilePath: ./infrastructure/docker/backend.Dockerfile
-    dockerContext: ./backend
-    # Free tier: no preDeployCommand and no healthCheckPath on a pserv — run migrations at startup, then uvicorn.
-    dockerCommand: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*' --no-server-header"
+    dockerfilePath: ./infrastructure/docker/web.Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
     envVars:
       - key: ENVIRONMENT
         value: production
@@ -52,21 +52,9 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS         # set to ["https://<cage-web url>"]
         sync: false
-      - key: DATA_ENCRYPTION_KEY     # base64 of 32 random bytes — from generate_secrets.py
+      - key: DATA_ENCRYPTION_KEY     # base64 of 32 random bytes
         sync: false
-      - key: AUDIT_HMAC_KEY          # base64 of 32 random bytes — from generate_secrets.py (MUST differ from above)
+      - key: AUDIT_HMAC_KEY          # base64 of 32 random bytes (MUST differ from above)
         sync: false
       - key: DEVICE_CA_KEY_PASSPHRASE # >= 24 chars
         sync: false
-
-  # Public web service: nginx serving the console + proxying /api and /agent to the private API.
-  - type: web
-    name: cage-web
-    runtime: docker
-    repo: https://github.com/Sravan-1912/Cage-cloud   # this repo (has the current code)
-    plan: free
-    dockerfilePath: ./infrastructure/docker/frontend.render.Dockerfile
-    dockerContext: .
-    envVars:
-      - key: API_UPSTREAM           # internal host:port of the private API, injected by Render
-        fromService: { type: pserv, name: cage-api, property: hostport }
