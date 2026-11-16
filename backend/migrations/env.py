@@ -4,11 +4,13 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from app.core.config import get_settings
+from app.core.database import _normalize_db_url
 from app.models import Base
 
 config = context.config
 _s = get_settings()
-config.set_main_option("sqlalchemy.url", (_s.migration_database_url or _s.database_url).replace("%", "%%"))
+config.set_main_option("sqlalchemy.url",
+                       _normalize_db_url(_s.migration_database_url or _s.database_url).replace("%", "%%"))
 target_metadata = Base.metadata
 
 

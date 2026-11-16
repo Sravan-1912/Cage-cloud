@@ -37,10 +37,22 @@ _engine = None
 _SessionLocal: sessionmaker[Session] | None = None
 
 
+def _normalize_db_url(url: str) -> str:
+    """Managed Postgres (Render/Heroku) hands out ``postgres://`` / ``postgresql://`` URLs, which SQLAlchemy routes to
+    psycopg2. This project ships psycopg 3, so pin the driver (``postgresql+psycopg://``). SQLite is left untouched."""
+    if url.startswith(("postgresql+", "sqlite")):
+        return url
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+    return url
+
+
 def get_engine():
     global _engine, _SessionLocal
     if _engine is None:
-        url = get_settings().database_url
+        url = _normalize_db_url(get_settings().database_url)
         kwargs: dict = {"pool_pre_ping": True}
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
