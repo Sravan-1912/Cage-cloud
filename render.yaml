@@ -6,16 +6,21 @@
 # After the first deploy you MUST set PUBLIC_BASE_URL and ALLOWED_ORIGINS to this service's real URL, and fill the
 # three secrets marked "sync: false" (generate with: python infrastructure/scripts/generate_secrets.py).
 
+# NOTE: all three resources are pinned to the SAME region (singapore) so the web service can reach the database over
+# Render's internal network. If you change the region, change it in all three places or internal DNS will not resolve.
+
 databases:
   - name: cage-db
     databaseName: antiquarians_cage
     plan: free
+    region: singapore
 
 services:
   # Redis (Key Value) — used for rate limiting.
   - type: redis
     name: cage-redis
     plan: free
+    region: singapore
     ipAllowList: []            # internal only
     maxmemoryPolicy: noeviction
 
@@ -25,6 +30,7 @@ services:
     runtime: docker
     repo: https://github.com/Sravan-1912/Cage-cloud   # this repo (has the current code)
     plan: free
+    region: singapore
     numInstances: 1          # the RDP relay pairs a session's two tunnel WebSockets within ONE process — don't scale out
     dockerfilePath: ./infrastructure/docker/web.Dockerfile
     dockerContext: .
