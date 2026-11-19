@@ -87,7 +87,9 @@ def get_ca() -> CA:
         crt_path, key_path = _paths()
         passphrase = s.device_ca_key_passphrase.encode()
         if not crt_path.exists() or not key_path.exists():
-            if s.environment == "production":
+            # Hardened production requires the CA to be created deliberately. An edge-TLS demo host (ALLOW_EDGE_TLS)
+            # auto-creates it on first run (on the ephemeral disk — add a persistent disk to keep it across redeploys).
+            if s.environment == "production" and not s.allow_edge_tls:
                 raise PKIError("Device CA not found; create it with infrastructure/scripts/create_device_ca.py")
             _ca = create_ca(crt_path.parent, passphrase)
             return _ca

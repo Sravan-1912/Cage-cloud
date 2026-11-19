@@ -42,7 +42,7 @@ def get_oidc_key() -> OIDCKey:
         path = Path(s.device_ca_dir) / "oidc-signing.key"
         pw = s.device_ca_key_passphrase.encode()
         if not path.exists():
-            if s.environment == "production":
+            if s.environment == "production" and not s.allow_edge_tls:
                 raise RuntimeError("OIDC signing key not found; create it offline before starting in production")
             path.parent.mkdir(parents=True, exist_ok=True)
             k = rsa.generate_private_key(public_exponent=65537, key_size=3072)

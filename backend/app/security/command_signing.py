@@ -53,7 +53,7 @@ def get_signing_key() -> SigningKey:
         path = Path(s.device_ca_dir) / "command-signing.key"
         passphrase = s.device_ca_key_passphrase.encode()
         if not path.exists():
-            if s.environment == "production":
+            if s.environment == "production" and not s.allow_edge_tls:
                 raise SigningError("Command signing key not found; create it offline (see SECURITY.md)")
             path.parent.mkdir(parents=True, exist_ok=True)
             k = Ed25519PrivateKey.generate()
