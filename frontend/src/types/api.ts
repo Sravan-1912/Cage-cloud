@@ -222,7 +222,7 @@ export interface EnrollmentToken {
   label: string
   employee_id: string | null
   created_at: string
-  expires_at: string
+  expires_at: string | null
   used_at: string | null
   used_by_device_id: string | null
   revoked_at: string | null
