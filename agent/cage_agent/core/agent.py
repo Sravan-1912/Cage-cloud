@@ -88,10 +88,15 @@ class Agent:
         self.key = identity.load_key(paths)
         self.client = AgentClient(self.cfg)
         self.next_inventory = 0.0
+        self._telemetry = None  # lazily-created EDR process-telemetry collector
         self.server_status = "unknown"
         from cage_agent.commands.executor import JobExecutor
         self.executor = JobExecutor(paths.root, self.cfg, lambda: configuration.save(self.paths, self.cfg))
         self.executor.session_event = self._session_event
+        # Device-key signer for the end-to-end (zero-knowledge relay) handshake (ECDSA P-256 over the exchanged keys).
+        from cryptography.hazmat.primitives import hashes as _h
+        from cryptography.hazmat.primitives.asymmetric import ec as _ec
+        self.executor.device_sign = lambda msg: self.key.sign(msg, _ec.ECDSA(_h.SHA256()))
 
     def _session_event(self, session_id: str, event: str, detail: str | None) -> None:
         try:
@@ -134,6 +139,53 @@ class Agent:
         self.client.inventory(self.key, data)
         log.info("inventory uploaded")
 
+    def telemetry_once(self) -> None:
+        """Collect newly-created-process telemetry and stream it for server-side EDR detection (best-effort)."""
+        if self._telemetry is None:
+            from cage_agent.collectors.telemetry import ProcessTelemetry
+            self._telemetry = ProcessTelemetry()
+        try:
+            events = self._telemetry.collect()
+        except Exception as exc:  # noqa: BLE001 - telemetry is best-effort; never take the agent down
+            log.debug("telemetry collection skipped: %s", exc)
+            return
+        rem = getattr(self, "_removable", None)
+        if rem is None:
+            from cage_agent.collectors.removable import RemovableStorage
+            rem = self._removable = RemovableStorage()
+        try:
+            events = events + rem.collect()  # newly-connected removable/USB storage
+        except Exception as exc:  # noqa: BLE001
+            log.debug("removable collection skipped: %s", exc)
+        if events:
+            self.client.telemetry(self.key, {"events": events})
+
+    def location_once(self) -> None:
+        """Scan nearby Wi-Fi access points so the server can resolve a position (best-effort; IP fallback server-side)."""
+        try:
+            from cage_agent.collectors.geolocation import scan_access_points
+            self.client.location(self.key, {"wifi_access_points": scan_access_points()})
+        except Exception as exc:  # noqa: BLE001 — never take the agent down for a location scan
+            log.debug("location report skipped: %s", exc)
+
+    def web_activity_once(self) -> None:
+        """Report aggregated per-domain browser visit counts for the fleet "Top websites" view (best-effort)."""
+        try:
+            from cage_agent.collectors.webhistory import collect as collect_sites
+            sites = collect_sites()
+            if sites:
+                self.client.web_activity(self.key, {"sites": sites})
+        except Exception as exc:  # noqa: BLE001
+            log.debug("web-activity report skipped: %s", exc)
+
+    def patch_status_once(self) -> None:
+        """Report OS patch status (pending updates, reboot-pending, last-patched) for the fleet scorecard (best-effort)."""
+        try:
+            from cage_agent.collectors.patches import collect as collect_patches
+            self.client.patch_status(self.key, collect_patches())
+        except Exception as exc:  # noqa: BLE001
+            log.debug("patch-status report skipped: %s", exc)
+
     def renew_certificate(self) -> None:
         new_key = identity.generate_key()
         resp = self.client.renew(self.key, {"csr_pem": identity.make_csr(new_key, socket.gethostname())})
@@ -159,8 +211,13 @@ class Agent:
                     failures = 0
                     if hb.get("jobs_pending") and self.server_status == "active":
                         self.jobs_once()
+                    if self.server_status == "active":
+                        self.telemetry_once()  # stream new-process telemetry every tick (cheap)
                     if self.server_status == "active" and time.monotonic() >= self.next_inventory:
                         self.inventory_once()
+                        self.location_once()      # Wi-Fi/IP geolocation, on the inventory cadence
+                        self.web_activity_once()  # aggregated top-domains, on the inventory cadence
+                        self.patch_status_once()  # OS patch status, on the inventory cadence
                         self.next_inventory = time.monotonic() + self.cfg.inventory_interval_seconds
                     elif self.server_status == "suspended":
                         log.info("device is suspended by an administrator; only heartbeats are sent")
@@ -184,6 +241,8 @@ class Agent:
                 relay.close()
             if self.executor.assist is not None:
                 self.executor.assist.end_all()  # never leave an indicator/Quick Assist running unattended
+            if self.executor.shell is not None:
+                self.executor.shell.end_all()   # never leave a live-response shell + banner running unattended
             self.client.close()
             log.info("agent stopped")
         return 0

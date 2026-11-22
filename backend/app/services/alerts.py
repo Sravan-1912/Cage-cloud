@@ -42,6 +42,8 @@ RULES: dict[str, dict] = {
     "authz_denied_burst": {"name": "Repeated permission denials", "kind": "suspicious_activity"},
     "edr_detection": {"name": "Endpoint threat detection", "kind": "suspicious_activity"},  # EDR telemetry rule match
     "remote_access_anomaly": {"name": "Suspicious remote access activity", "kind": "suspicious_activity"},
+    "geofence_violation": {"name": "Endpoint located outside an allowed region", "kind": "suspicious_activity"},
+    "impossible_travel": {"name": "Impossible travel between endpoint locations", "kind": "suspicious_activity"},
     "audit_integrity": {"name": "Audit log integrity check failed", "kind": "suspicious_activity"},
     "phone_approval_refused": {"name": "Sign-in approval refused on phone", "kind": "suspicious_activity"},
     "audit_anchor_failed": {"name": "Audit anchor not written externally", "kind": "operational"},
@@ -90,9 +92,16 @@ def raise_alert(db: Session, org_id: uuid.UUID, rule_key: str, *, title: str, de
     db.add(AlertEvent(alert_id=a.id, kind="created", actor_label="detection", details={"rule": rule_key}))
     if severity in NOTIFY_AT:
         _notify(db, a)
-    try:  # SIEM egress (best-effort enqueue into the durable outbox; never fails the alert)
-        from app.services import siem
-        siem.enqueue(db, org_id, siem.alert_payload(a), severity)
+    try:  # SIEM + chat egress (best-effort enqueue into the durable outboxes; never fails the alert)
+        from app.services import chat, siem
+        payload = siem.alert_payload(a)
+        siem.enqueue(db, org_id, payload, severity)
+        chat.enqueue(db, org_id, payload, severity)
+    except Exception:  # noqa: BLE001
+        pass
+    try:  # automated-response playbooks (SOAR) — best-effort, runs once per new alert
+        from app.services import playbooks
+        playbooks.evaluate(db, a)
     except Exception:  # noqa: BLE001
         pass
     return a

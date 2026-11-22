@@ -21,7 +21,7 @@ from app.models import (
 )
 from app.schemas import endpoints as s
 from app.schemas.common import Page
-from app.services import audit, devices, subscriptions, tenancy, webactivity
+from app.services import audit, devices, patches, subscriptions, tenancy, timeline, webactivity
 from app.services.devices import DeviceError
 
 router = APIRouter(tags=["endpoints"])
@@ -242,6 +242,14 @@ def device_location(device_id: uuid.UUID, ctx: AuthContext = Depends(READ), db: 
     return db.scalar(select(DeviceLocation).where(DeviceLocation.device_id == device_id))
 
 
+@router.get("/devices/{device_id}/timeline", response_model=list[s.TimelineEntryOut])
+def device_timeline(device_id: uuid.UUID, ctx: AuthContext = Depends(READ), db: Session = Depends(get_db)):
+    """Unified, read-only activity feed for one endpoint: lifecycle events, alerts, remote actions, sessions and
+    script runs merged into one reverse-chronological timeline."""
+    _get(db, ctx, device_id)  # scope check
+    return timeline.device_timeline(db, device_id)
+
+
 @router.get("/devices/{device_id}/top-sites", response_model=list[s.DeviceTopSiteOut])
 def device_top_sites(device_id: uuid.UUID, ctx: AuthContext = Depends(READ), db: Session = Depends(get_db)):
     """Most-visited domains reported by one endpoint's browsers (aggregated counts, no full URLs)."""
@@ -271,6 +279,55 @@ def web_activity_top(ctx: AuthContext = Depends(READ), db: Session = Depends(get
     """Fleet-wide top 10 websites across all visible endpoints (aggregated domain visit counts)."""
     device_ids = list(db.scalars(_scope(select(Device.id), ctx)).all())
     return webactivity.fleet_top(db, device_ids, limit=10)
+
+
+@router.get("/devices/{device_id}/patch-status", response_model=s.DevicePatchStatusOut | None)
+def device_patch_status(device_id: uuid.UUID, ctx: AuthContext = Depends(READ), db: Session = Depends(get_db)):
+    """Latest OS patch status for one endpoint (pending updates by severity, reboot-pending, last-patched)."""
+    _get(db, ctx, device_id)
+    return patches.device_status(db, device_id)
+
+
+@router.get("/patch/summary", response_model=s.PatchFleetSummaryOut)
+def patch_summary(ctx: AuthContext = Depends(READ), db: Session = Depends(get_db)):
+    """Fleet patch scorecard across all visible endpoints (reporting / up-to-date / critical / reboot-pending)."""
+    device_ids = list(db.scalars(_scope(select(Device.id), ctx)).all())
+    return patches.fleet_summary(db, device_ids)
+
+
+def _geo_policy_out(p) -> s.GeoPolicyOut:
+    if p is None:
+        return s.GeoPolicyOut(geofence_enabled=False, allowed_countries=[], on_violation="alert", impossible_travel=False)
+    return s.GeoPolicyOut(geofence_enabled=p.geofence_enabled, allowed_countries=p.allowed_countries,
+                          on_violation=p.on_violation, impossible_travel=p.impossible_travel)
+
+
+@router.get("/geo/policy", response_model=s.GeoPolicyOut)
+def get_geo_policy(ctx: AuthContext = Depends(READ), db: Session = Depends(get_db)):
+    """The org's location-security policy: geo-fencing (allowed countries) + impossible-travel detection."""
+    from app.models import GeoSecurityPolicy
+    return _geo_policy_out(db.scalar(select(GeoSecurityPolicy).where(GeoSecurityPolicy.organization_id == ctx.user.organization_id)))
+
+
+@router.put("/geo/policy", response_model=s.GeoPolicyOut)
+def set_geo_policy(body: s.GeoPolicyUpdate, ctx: AuthContext = Depends(require_permission("devices:manage")),
+                   db: Session = Depends(get_db)):
+    from app.models import GeoSecurityPolicy
+    p = db.scalar(select(GeoSecurityPolicy).where(GeoSecurityPolicy.organization_id == ctx.user.organization_id))
+    if p is None:
+        p = GeoSecurityPolicy(organization_id=ctx.user.organization_id)
+        db.add(p)
+    p.geofence_enabled = body.geofence_enabled
+    p.allowed_countries = [c.strip() for c in body.allowed_countries if c.strip()]
+    p.on_violation = body.on_violation
+    p.impossible_travel = body.impossible_travel
+    p.updated_at = utcnow()
+    db.commit()
+    audit.record(db, ctx.user.organization_id, ctx.actor, "geo.policy_updated",
+                 metadata={"geofence_enabled": p.geofence_enabled, "allowed_countries": p.allowed_countries,
+                           "on_violation": p.on_violation, "impossible_travel": p.impossible_travel})
+    db.commit()
+    return _geo_policy_out(p)
 
 
 @router.patch("/devices/{device_id}", response_model=s.DeviceOut)
